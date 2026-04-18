@@ -131,19 +131,6 @@ func (m *model) tryDirectionWord() {
 	}
 }
 
-func (m *model) undoOne() {
-	if m.gameOver {
-		return
-	}
-	if len(m.stack) == 0 {
-		return
-	}
-	s := m.stack[len(m.stack)-1]
-	m.stack = m.stack[:len(m.stack)-1]
-	m.setCell(pos{s.x, s.y}, ' ')
-	m.cx, m.cy = s.x, s.y
-}
-
 func (m *model) place(r rune) {
 	if m.gameOver {
 		return
@@ -226,9 +213,6 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	switch k.String() {
-	case "backspace", "ctrl+h":
-		m.undoOne()
-		return m, tick60()
 	case "space":
 		if m.cells != nil {
 			m.place(' ')
