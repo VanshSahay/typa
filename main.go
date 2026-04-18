@@ -9,9 +9,9 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/charmbracelet/harmonica"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/harmonica"
 )
 
 type frameMsg struct{}
@@ -37,17 +37,32 @@ type model struct {
 
 	stack []step
 
-	// Camera (float); springs follow cursor for smooth scrolling.
-	camX, camY     float64
-	velX, velY     float64
+	camX, camY       float64
+	velX, velY       float64
 	springX, springY harmonica.Spring
 
-	dots  map[pos]struct{}
-	score int
+	dots     map[pos]struct{}
+	score    int
+	gameOver bool
 }
 
 const targetDots = 5
 const dotValue = 10
+
+// Visual scale: each logical cell is drawn scaleX terminal columns wide (taller letters).
+// Do not duplicate whole rows vertically — that looked like two parallel text streams.
+const scaleX = 1
+
+func repeatStyle(st lipgloss.Style, r rune, n int) string {
+	if n < 1 {
+		return ""
+	}
+	b := make([]rune, n)
+	for i := range b {
+		b[i] = r
+	}
+	return st.Render(string(b))
+}
 
 func (m *model) Init() tea.Cmd {
 	m.cells = make(map[pos]rune)
@@ -56,6 +71,7 @@ func (m *model) Init() tea.Cmd {
 	m.springX = harmonica.NewSpring(harmonica.FPS(60), 9.0, 0.92)
 	m.springY = harmonica.NewSpring(harmonica.FPS(60), 9.0, 0.92)
 	m.camX, m.camY = float64(m.cx), float64(m.cy)
+	m.ensureCollectibles()
 	return tick60()
 }
 
@@ -63,7 +79,6 @@ func isOpposite(ax, ay, bx, by int) bool {
 	return ax == -bx && ay == -by
 }
 
-// faceDirection sets facing to (dx,dy) unless that is exactly opposite to current facing.
 func (m *model) faceDirection(dx, dy int) {
 	if dx == 0 && dy == 0 {
 		return
@@ -77,7 +92,7 @@ func (m *model) faceDirection(dx, dy int) {
 	m.dx, m.dy = dx, dy
 }
 
-func (m *model) spawnCollectible() {
+func (m *model) spawnCollectible() bool {
 	for range 120 {
 		dx := rand.Intn(55) - 27
 		dy := rand.Intn(55) - 27
@@ -92,13 +107,19 @@ func (m *model) spawnCollectible() {
 			continue
 		}
 		m.dots[p] = struct{}{}
-		return
+		return true
 	}
+	return false
 }
 
 func (m *model) ensureCollectibles() {
+	if m.gameOver {
+		return
+	}
 	for m.dots != nil && len(m.dots) < targetDots {
-		m.spawnCollectible()
+		if !m.spawnCollectible() {
+			break
+		}
 	}
 }
 
@@ -109,7 +130,7 @@ func (m *model) tryCollect() {
 	}
 	delete(m.dots, p)
 	m.score += dotValue
-	m.spawnCollectible()
+	m.ensureCollectibles()
 }
 
 func tick60() tea.Cmd {
@@ -172,6 +193,9 @@ func (m *model) tryDirectionWord() {
 }
 
 func (m *model) undoOne() {
+	if m.gameOver {
+		return
+	}
 	if len(m.stack) == 0 {
 		return
 	}
@@ -182,12 +206,21 @@ func (m *model) undoOne() {
 }
 
 func (m *model) place(r rune) {
+	if m.gameOver {
+		return
+	}
 	p := pos{m.cx, m.cy}
 	delete(m.dots, p)
 	m.setCell(p, r)
 	m.stack = append(m.stack, step{x: m.cx, y: m.cy, r: r})
 	m.tryDirectionWord()
 	m.advanceCursor()
+
+	next := pos{m.cx, m.cy}
+	if m.getCell(next) != ' ' {
+		m.gameOver = true
+		return
+	}
 	m.tryCollect()
 }
 
@@ -201,16 +234,32 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.resize(msg.Width, msg.Height)
-		m.ensureCollectibles()
+		if !m.gameOver {
+			m.resize(msg.Width, msg.Height)
+			m.ensureCollectibles()
+		} else {
+			m.resize(msg.Width, msg.Height)
+		}
 		return m, tick60()
 
 	case tea.KeyPressMsg:
 		k := msg.Key()
+		// Key repeat would place the same glyph twice in one tick; ignore for typed text.
+		if k.IsRepeat && k.Text != "" {
+			return m, tick60()
+		}
 		if k.Mod&(tea.ModCtrl|tea.ModAlt|tea.ModMeta|tea.ModSuper) != 0 {
 			if k.String() == "ctrl+c" {
 				return m, tea.Quit
 			}
+			return m, tick60()
+		}
+		switch k.String() {
+		case "esc":
+			return m, tea.Quit
+		}
+
+		if m.gameOver {
 			return m, tick60()
 		}
 
@@ -230,8 +279,6 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		switch k.String() {
-		case "esc":
-			return m, tea.Quit
 		case "backspace", "ctrl+h":
 			m.undoOne()
 			return m, tick60()
@@ -255,68 +302,102 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, tick60()
 }
 
-func (m *model) hintText() string {
-	dir := "→"
-	switch {
-	case m.dx == 1 && m.dy == 0:
-		dir = "→"
-	case m.dx == -1 && m.dy == 0:
-		dir = "←"
-	case m.dx == 0 && m.dy == -1:
-		dir = "↑"
-	case m.dx == 0 && m.dy == 1:
-		dir = "↓"
-	}
-	line1 := fmt.Sprintf("score %d  · typing moves %s  · ◎ collectibles (+ %d) — walk your cursor onto them", m.score, dir, dotValue)
-	line2 := "arrows / words turn (no 180°)  ·  type over a ◎ to clear it without score  ·  esc quits"
-	return line1 + "\n" + line2
+func (m *model) bottomHint() string {
+	return "Press Esc to exit."
 }
 
-func (m *model) viewportSize() (viewCols, viewRows int) {
+func (m *model) viewportSize() (logicalCols, logicalRows int) {
 	contentW := max(1, m.width-4)
-	hintBlock := lipgloss.NewStyle().Width(contentW).Render(m.hintText())
-	hintLines := strings.Count(hintBlock, "\n") + 1
-	viewRows = max(1, m.height-hintLines-3)
-	viewCols = contentW
-	return viewCols, viewRows
+	header := lipgloss.NewStyle().Width(contentW).Render(m.headerLine())
+	headerLines := strings.Count(header, "\n") + 1
+	hint := lipgloss.NewStyle().Width(contentW).Render(m.bottomHint())
+	hintLines := strings.Count(hint, "\n") + 1
+	border := 2
+	avail := m.height - border - headerLines - hintLines - 1
+	if avail < 1 {
+		avail = 1
+	}
+	logicalRows = max(1, avail)
+	logicalCols = max(1, contentW/scaleX)
+	return logicalCols, logicalRows
 }
 
-func (m *model) renderViewport(viewCols, viewRows int) string {
+func (m *model) headerLine() string {
+	if m.gameOver {
+		return ""
+	}
+	return fmt.Sprintf("score %d", m.score)
+}
+
+func (m *model) renderViewport(logicalCols, logicalRows int) string {
 	ink := lipgloss.NewStyle().Foreground(lipgloss.Color("#e4e4e7")).Bold(true)
+	coin := lipgloss.NewStyle().Foreground(lipgloss.Color("#fbbf24")).Bold(true)
 	cur := lipgloss.NewStyle().
 		Underline(true).
 		Foreground(lipgloss.Color("#fafafa"))
+	curCoin := lipgloss.NewStyle().
+		Underline(true).
+		Foreground(lipgloss.Color("#fbbf24")).
+		Bold(true)
 
-	halfW, halfH := viewCols/2, viewRows/2
+	halfW, halfH := logicalCols/2, logicalRows/2
 	centerX := math.Round(m.camX)
 	centerY := math.Round(m.camY)
 
 	var b strings.Builder
-	for sy := 0; sy < viewRows; sy++ {
-		for sx := 0; sx < viewCols; sx++ {
+	for sy := 0; sy < logicalRows; sy++ {
+		var row strings.Builder
+		for sx := 0; sx < logicalCols; sx++ {
 			wx := int(centerX) + (sx - halfW)
 			wy := int(centerY) + (sy - halfH)
 			p := pos{wx, wy}
 			r := m.getCell(p)
 			atCursor := wx == m.cx && wy == m.cy
 			empty := r == ' ' || r == 0
+			_, hasDot := m.dots[p]
 
+			var seg string
 			switch {
-			case atCursor && empty:
-				b.WriteString(cur.Render(" "))
+			case atCursor && empty && hasDot:
+				seg = repeatStyle(curCoin, '◎', scaleX)
+			case atCursor && empty && !hasDot:
+				seg = repeatStyle(cur, ' ', scaleX)
 			case atCursor && !empty:
-				b.WriteString(cur.Render(string(r)))
+				seg = repeatStyle(cur, r, scaleX)
+			case empty && hasDot:
+				seg = repeatStyle(coin, '◎', scaleX)
 			case empty:
-				b.WriteByte(' ')
+				seg = strings.Repeat(" ", scaleX)
 			default:
-				b.WriteString(ink.Render(string(r)))
+				seg = repeatStyle(ink, r, scaleX)
 			}
+			row.WriteString(seg)
 		}
-		if sy < viewRows-1 {
-			b.WriteByte('\n')
-		}
+		b.WriteString(row.String())
+		b.WriteByte('\n')
 	}
-	return b.String()
+	return strings.TrimSuffix(b.String(), "\n")
+}
+
+func (m *model) gameOverView() string {
+	title := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("#f87171")).
+		Render("GAME OVER")
+	sub := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#e4e4e7")).
+		Render(fmt.Sprintf("final score %d", m.score))
+	blurb := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#a1a1aa")).
+		Render("You crossed your own trail.")
+	block := lipgloss.JoinVertical(lipgloss.Center, title, sub, "", blurb)
+	return lipgloss.Place(
+		m.width,
+		m.height-3,
+		lipgloss.Center,
+		lipgloss.Center,
+		block,
+	)
 }
 
 func (m *model) View() tea.View {
@@ -326,21 +407,53 @@ func (m *model) View() tea.View {
 		return v
 	}
 
-	viewCols, viewRows := m.viewportSize()
-	grid := m.renderViewport(viewCols, viewRows)
+	if m.gameOver {
+		innerW := max(1, m.width-4)
+		hint := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#71717a")).
+			Width(innerW).
+			Align(lipgloss.Center).
+			Render(m.bottomHint())
+		main := m.gameOverView()
+		box := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("#52525b")).
+			Padding(0, 1).
+			Width(m.width).
+			Render(main + "\n\n" + hint)
+		screen := lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
+		v := tea.NewView(screen)
+		v.AltScreen = true
+		return v
+	}
+
+	logicalCols, logicalRows := m.viewportSize()
+	grid := m.renderViewport(logicalCols, logicalRows)
 
 	innerW := max(1, m.width-4)
+	head := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("#a1a1aa")).
+		Width(innerW).
+		Render(m.headerLine())
+
 	hint := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#71717a")).
 		Width(innerW).
-		Render(m.hintText())
+		Align(lipgloss.Center).
+		Render(m.bottomHint())
+
+	body := grid
+	if strings.TrimSpace(m.headerLine()) != "" {
+		body = head + "\n" + grid
+	}
 
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("#52525b")).
 		Padding(0, 1).
 		Width(m.width).
-		Render(grid + "\n" + hint)
+		Render(body + "\n\n" + hint)
 
 	screen := lipgloss.Place(
 		m.width,
