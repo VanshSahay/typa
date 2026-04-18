@@ -2,13 +2,18 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"strings"
+	"time"
 	"unicode"
 
+	"github.com/charmbracelet/harmonica"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 )
+
+type frameMsg struct{}
 
 type pos struct {
 	x, y int
@@ -30,12 +35,26 @@ type model struct {
 	dy    int
 
 	stack []step
+
+	// Camera (float); springs follow cursor for smooth scrolling.
+	camX, camY     float64
+	velX, velY     float64
+	springX, springY harmonica.Spring
 }
 
 func (m *model) Init() tea.Cmd {
 	m.cells = make(map[pos]rune)
 	m.dx, m.dy = 1, 0
-	return nil
+	m.springX = harmonica.NewSpring(harmonica.FPS(60), 9.0, 0.92)
+	m.springY = harmonica.NewSpring(harmonica.FPS(60), 9.0, 0.92)
+	m.camX, m.camY = float64(m.cx), float64(m.cy)
+	return tick60()
+}
+
+func tick60() tea.Cmd {
+	return tea.Tick(time.Second/60, func(t time.Time) tea.Msg {
+		return frameMsg{}
+	})
 }
 
 func (m *model) resize(w, h int) {
@@ -89,25 +108,10 @@ func (m *model) tryDirectionWord() {
 			b.WriteRune(m.stack[i].r)
 		}
 		if strings.EqualFold(b.String(), dw.word) {
-			m.undoSteps(n)
 			m.setDirection(dw.dx, dw.dy)
 			return
 		}
 	}
-}
-
-func (m *model) undoSteps(n int) {
-	if len(m.stack) < n || n <= 0 {
-		return
-	}
-	start := len(m.stack) - n
-	first := m.stack[start]
-	for i := len(m.stack) - 1; i >= start; i-- {
-		s := m.stack[i]
-		m.setCell(pos{s.x, s.y}, ' ')
-	}
-	m.stack = m.stack[:start]
-	m.cx, m.cy = first.x, first.y
 }
 
 func (m *model) undoOne() {
@@ -129,9 +133,17 @@ func (m *model) place(r rune) {
 }
 
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg.(type) {
+	case frameMsg:
+		m.camX, m.velX = m.springX.Update(m.camX, m.velX, float64(m.cx))
+		m.camY, m.velY = m.springY.Update(m.camY, m.velY, float64(m.cy))
+		return m, tick60()
+	}
+
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.resize(msg.Width, msg.Height)
+		return m, tick60()
 
 	case tea.KeyPressMsg:
 		k := msg.Key()
@@ -139,22 +151,22 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if k.String() == "ctrl+c" {
 				return m, tea.Quit
 			}
-			return m, nil
+			return m, tick60()
 		}
 
 		switch k.Code {
 		case tea.KeyUp:
 			m.setDirection(0, -1)
-			return m, nil
+			return m, tick60()
 		case tea.KeyDown:
 			m.setDirection(0, 1)
-			return m, nil
+			return m, tick60()
 		case tea.KeyLeft:
 			m.setDirection(-1, 0)
-			return m, nil
+			return m, tick60()
 		case tea.KeyRight:
 			m.setDirection(1, 0)
-			return m, nil
+			return m, tick60()
 		}
 
 		switch k.String() {
@@ -162,12 +174,12 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case "backspace", "ctrl+h":
 			m.undoOne()
-			return m, nil
+			return m, tick60()
 		case "space":
 			if m.cells != nil {
 				m.place(' ')
 			}
-			return m, nil
+			return m, tick60()
 		default:
 			if k.Text != "" && m.cells != nil {
 				for _, r := range k.Text {
@@ -176,10 +188,11 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			}
+			return m, tick60()
 		}
 	}
 
-	return m, nil
+	return m, tick60()
 }
 
 func (m *model) hintText() string {
@@ -194,45 +207,45 @@ func (m *model) hintText() string {
 	case m.dx == 0 && m.dy == 1:
 		dir = "↓"
 	}
-	return "typing moves " + dir + "  ·  arrows aim  ·  type up/down/left/right to turn ·  esc quits"
+	return "typing moves " + dir + "  ·  arrows aim  ·  type up/down/left/right (letters stay)  ·  esc quits"
 }
 
-// viewportSize returns the playable grid size so the bordered view + wrapped hint never exceeds the terminal.
 func (m *model) viewportSize() (viewCols, viewRows int) {
 	contentW := max(1, m.width-4)
 	hintBlock := lipgloss.NewStyle().Width(contentW).Render(m.hintText())
 	hintLines := strings.Count(hintBlock, "\n") + 1
-	// grid lines + wrapped hint + rounded border (top/bottom) must fit in m.height
 	viewRows = max(1, m.height-hintLines-3)
 	viewCols = contentW
 	return viewCols, viewRows
 }
 
 func (m *model) renderViewport(viewCols, viewRows int) string {
-	ink := lipgloss.NewStyle().Foreground(lipgloss.Color("#e4e4e7"))
-	grass := lipgloss.NewStyle().Foreground(lipgloss.Color("#3f7f3a"))
+	ink := lipgloss.NewStyle().Foreground(lipgloss.Color("#e4e4e7")).Bold(true)
 	cur := lipgloss.NewStyle().
-		Background(lipgloss.Color("#6366f1")).
+		Underline(true).
 		Foreground(lipgloss.Color("#fafafa"))
 
 	halfW, halfH := viewCols/2, viewRows/2
+	centerX := math.Round(m.camX)
+	centerY := math.Round(m.camY)
 
 	var b strings.Builder
 	for sy := 0; sy < viewRows; sy++ {
 		for sx := 0; sx < viewCols; sx++ {
-			wx := m.cx - halfW + sx
-			wy := m.cy - halfH + sy
+			wx := int(centerX) + (sx - halfW)
+			wy := int(centerY) + (sy - halfH)
 			p := pos{wx, wy}
 			r := m.getCell(p)
 			atCursor := wx == m.cx && wy == m.cy
 			empty := r == ' ' || r == 0
+
 			switch {
 			case atCursor && empty:
 				b.WriteString(cur.Render(" "))
 			case atCursor && !empty:
 				b.WriteString(cur.Render(string(r)))
 			case empty:
-				b.WriteString(grass.Render(","))
+				b.WriteByte(' ')
 			default:
 				b.WriteString(ink.Render(string(r)))
 			}

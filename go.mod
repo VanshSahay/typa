@@ -5,7 +5,7 @@ go 1.25.5
 require (
 	charm.land/bubbletea/v2 v2.0.1
 	charm.land/lipgloss/v2 v2.0.0
-	github.com/charmbracelet/x/exp/charmtone v0.0.0-20260305213658-fe36e8c10185
+	github.com/charmbracelet/harmonica v0.2.0
 )
 
 require (
