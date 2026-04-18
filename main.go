@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"math"
+	"math/rand"
 	"os"
 	"strings"
 	"time"
@@ -40,15 +41,75 @@ type model struct {
 	camX, camY     float64
 	velX, velY     float64
 	springX, springY harmonica.Spring
+
+	dots  map[pos]struct{}
+	score int
 }
+
+const targetDots = 5
+const dotValue = 10
 
 func (m *model) Init() tea.Cmd {
 	m.cells = make(map[pos]rune)
+	m.dots = make(map[pos]struct{})
 	m.dx, m.dy = 1, 0
 	m.springX = harmonica.NewSpring(harmonica.FPS(60), 9.0, 0.92)
 	m.springY = harmonica.NewSpring(harmonica.FPS(60), 9.0, 0.92)
 	m.camX, m.camY = float64(m.cx), float64(m.cy)
 	return tick60()
+}
+
+func isOpposite(ax, ay, bx, by int) bool {
+	return ax == -bx && ay == -by
+}
+
+// faceDirection sets facing to (dx,dy) unless that is exactly opposite to current facing.
+func (m *model) faceDirection(dx, dy int) {
+	if dx == 0 && dy == 0 {
+		return
+	}
+	if m.dx == dx && m.dy == dy {
+		return
+	}
+	if isOpposite(m.dx, m.dy, dx, dy) {
+		return
+	}
+	m.dx, m.dy = dx, dy
+}
+
+func (m *model) spawnCollectible() {
+	for range 120 {
+		dx := rand.Intn(55) - 27
+		dy := rand.Intn(55) - 27
+		if dx*dx+dy*dy < 8*8 {
+			continue
+		}
+		p := pos{m.cx + dx, m.cy + dy}
+		if m.getCell(p) != ' ' {
+			continue
+		}
+		if _, taken := m.dots[p]; taken {
+			continue
+		}
+		m.dots[p] = struct{}{}
+		return
+	}
+}
+
+func (m *model) ensureCollectibles() {
+	for m.dots != nil && len(m.dots) < targetDots {
+		m.spawnCollectible()
+	}
+}
+
+func (m *model) tryCollect() {
+	p := pos{m.cx, m.cy}
+	if _, ok := m.dots[p]; !ok {
+		return
+	}
+	delete(m.dots, p)
+	m.score += dotValue
+	m.spawnCollectible()
 }
 
 func tick60() tea.Cmd {
@@ -81,10 +142,6 @@ func (m *model) advanceCursor() {
 	m.cy += m.dy
 }
 
-func (m *model) setDirection(dx, dy int) {
-	m.dx, m.dy = dx, dy
-}
-
 var directionWords = []struct {
 	word string
 	dx   int
@@ -108,7 +165,7 @@ func (m *model) tryDirectionWord() {
 			b.WriteRune(m.stack[i].r)
 		}
 		if strings.EqualFold(b.String(), dw.word) {
-			m.setDirection(dw.dx, dw.dy)
+			m.faceDirection(dw.dx, dw.dy)
 			return
 		}
 	}
@@ -126,10 +183,12 @@ func (m *model) undoOne() {
 
 func (m *model) place(r rune) {
 	p := pos{m.cx, m.cy}
+	delete(m.dots, p)
 	m.setCell(p, r)
 	m.stack = append(m.stack, step{x: m.cx, y: m.cy, r: r})
 	m.tryDirectionWord()
 	m.advanceCursor()
+	m.tryCollect()
 }
 
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -143,6 +202,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.resize(msg.Width, msg.Height)
+		m.ensureCollectibles()
 		return m, tick60()
 
 	case tea.KeyPressMsg:
@@ -156,16 +216,16 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		switch k.Code {
 		case tea.KeyUp:
-			m.setDirection(0, -1)
+			m.faceDirection(0, -1)
 			return m, tick60()
 		case tea.KeyDown:
-			m.setDirection(0, 1)
+			m.faceDirection(0, 1)
 			return m, tick60()
 		case tea.KeyLeft:
-			m.setDirection(-1, 0)
+			m.faceDirection(-1, 0)
 			return m, tick60()
 		case tea.KeyRight:
-			m.setDirection(1, 0)
+			m.faceDirection(1, 0)
 			return m, tick60()
 		}
 
@@ -207,7 +267,9 @@ func (m *model) hintText() string {
 	case m.dx == 0 && m.dy == 1:
 		dir = "↓"
 	}
-	return "typing moves " + dir + "  ·  arrows aim  ·  type up/down/left/right (letters stay)  ·  esc quits"
+	line1 := fmt.Sprintf("score %d  · typing moves %s  · ◎ collectibles (+ %d) — walk your cursor onto them", m.score, dir, dotValue)
+	line2 := "arrows / words turn (no 180°)  ·  type over a ◎ to clear it without score  ·  esc quits"
+	return line1 + "\n" + line2
 }
 
 func (m *model) viewportSize() (viewCols, viewRows int) {
