@@ -10,6 +10,10 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
+type pos struct {
+	x, y int
+}
+
 type step struct {
 	x, y int
 	r    rune
@@ -18,68 +22,50 @@ type step struct {
 type model struct {
 	width  int
 	height int
-	cols   int
-	rows   int
 
-	grid [][]rune
-	cx   int
-	cy   int
-	dx   int
-	dy   int
+	cells map[pos]rune
+	cx    int
+	cy    int
+	dx    int
+	dy    int
 
 	stack []step
 }
 
 func (m *model) Init() tea.Cmd {
+	m.cells = make(map[pos]rune)
 	m.dx, m.dy = 1, 0
 	return nil
 }
 
-func clamp(v, lo, hi int) int {
-	if v < lo {
-		return lo
-	}
-	if v > hi {
-		return hi
-	}
-	return v
-}
-
 func (m *model) resize(w, h int) {
 	m.width, m.height = w, h
-	cols := max(4, w-4)
-	rows := max(4, h-6)
-	if cols == m.cols && rows == m.rows && m.grid != nil {
-		return
-	}
+}
 
-	next := make([][]rune, rows)
-	for y := range next {
-		next[y] = make([]rune, cols)
-		for x := range next[y] {
-			ch := ' '
-			if m.grid != nil && y < len(m.grid) && m.grid[y] != nil && x < len(m.grid[y]) {
-				ch = m.grid[y][x]
-			}
-			next[y][x] = ch
-		}
+func (m *model) setCell(p pos, r rune) {
+	if r == ' ' {
+		delete(m.cells, p)
+	} else {
+		m.cells[p] = r
 	}
-	m.grid = next
-	m.cols, m.rows = cols, rows
-	m.cx = clamp(m.cx, 0, m.cols-1)
-	m.cy = clamp(m.cy, 0, m.rows-1)
+}
+
+func (m *model) getCell(p pos) rune {
+	if r, ok := m.cells[p]; ok {
+		return r
+	}
+	return ' '
 }
 
 func (m *model) advanceCursor() {
-	m.cx = (m.cx + m.dx + m.cols) % m.cols
-	m.cy = (m.cy + m.dy + m.rows) % m.rows
+	m.cx += m.dx
+	m.cy += m.dy
 }
 
 func (m *model) setDirection(dx, dy int) {
 	m.dx, m.dy = dx, dy
 }
 
-// directionWords: longest first so we match "right" before any shared prefix issue.
 var directionWords = []struct {
 	word string
 	dx   int
@@ -118,7 +104,7 @@ func (m *model) undoSteps(n int) {
 	first := m.stack[start]
 	for i := len(m.stack) - 1; i >= start; i-- {
 		s := m.stack[i]
-		m.grid[s.y][s.x] = ' '
+		m.setCell(pos{s.x, s.y}, ' ')
 	}
 	m.stack = m.stack[:start]
 	m.cx, m.cy = first.x, first.y
@@ -130,12 +116,13 @@ func (m *model) undoOne() {
 	}
 	s := m.stack[len(m.stack)-1]
 	m.stack = m.stack[:len(m.stack)-1]
-	m.grid[s.y][s.x] = ' '
+	m.setCell(pos{s.x, s.y}, ' ')
 	m.cx, m.cy = s.x, s.y
 }
 
 func (m *model) place(r rune) {
-	m.grid[m.cy][m.cx] = r
+	p := pos{m.cx, m.cy}
+	m.setCell(p, r)
 	m.stack = append(m.stack, step{x: m.cx, y: m.cy, r: r})
 	m.tryDirectionWord()
 	m.advanceCursor()
@@ -177,12 +164,12 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.undoOne()
 			return m, nil
 		case "space":
-			if m.grid != nil {
+			if m.cells != nil {
 				m.place(' ')
 			}
 			return m, nil
 		default:
-			if k.Text != "" && m.grid != nil {
+			if k.Text != "" && m.cells != nil {
 				for _, r := range k.Text {
 					if unicode.IsPrint(r) {
 						m.place(r)
@@ -195,42 +182,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *model) renderGrid() string {
-	ink := lipgloss.NewStyle().Foreground(lipgloss.Color("#e4e4e7"))
-	floor := lipgloss.NewStyle().Foreground(lipgloss.Color("#3f3f46"))
-	cur := lipgloss.NewStyle().
-		Background(lipgloss.Color("#6366f1")).
-		Foreground(lipgloss.Color("#fafafa"))
-
-	var b strings.Builder
-	for y := 0; y < m.rows; y++ {
-		for x := 0; x < m.cols; x++ {
-			r := m.grid[y][x]
-			atCursor := x == m.cx && y == m.cy
-			ch := string(r)
-			if r == ' ' {
-				ch = " "
-				if atCursor {
-					b.WriteString(cur.Render(" "))
-					continue
-				}
-				b.WriteString(floor.Render("·"))
-				continue
-			}
-			if atCursor {
-				b.WriteString(cur.Render(ch))
-			} else {
-				b.WriteString(ink.Render(ch))
-			}
-		}
-		if y < m.rows-1 {
-			b.WriteByte('\n')
-		}
-	}
-	return b.String()
-}
-
-func (m *model) hintBar() string {
+func (m *model) hintText() string {
 	dir := "→"
 	switch {
 	case m.dx == 1 && m.dy == 0:
@@ -242,43 +194,88 @@ func (m *model) hintBar() string {
 	case m.dx == 0 && m.dy == 1:
 		dir = "↓"
 	}
-	s := lipgloss.NewStyle().Foreground(lipgloss.Color("#71717a"))
-	return s.Render("typing moves "+dir+"  ·  arrows aim  ·  type up down left right to turn  ·  esc quits")
+	return "typing moves " + dir + "  ·  arrows aim  ·  type up/down/left/right to turn ·  esc quits"
+}
+
+// viewportSize returns the playable grid size so the bordered view + wrapped hint never exceeds the terminal.
+func (m *model) viewportSize() (viewCols, viewRows int) {
+	contentW := max(1, m.width-4)
+	hintBlock := lipgloss.NewStyle().Width(contentW).Render(m.hintText())
+	hintLines := strings.Count(hintBlock, "\n") + 1
+	// grid lines + wrapped hint + rounded border (top/bottom) must fit in m.height
+	viewRows = max(1, m.height-hintLines-3)
+	viewCols = contentW
+	return viewCols, viewRows
+}
+
+func (m *model) renderViewport(viewCols, viewRows int) string {
+	ink := lipgloss.NewStyle().Foreground(lipgloss.Color("#e4e4e7"))
+	grass := lipgloss.NewStyle().Foreground(lipgloss.Color("#3f7f3a"))
+	cur := lipgloss.NewStyle().
+		Background(lipgloss.Color("#6366f1")).
+		Foreground(lipgloss.Color("#fafafa"))
+
+	halfW, halfH := viewCols/2, viewRows/2
+
+	var b strings.Builder
+	for sy := 0; sy < viewRows; sy++ {
+		for sx := 0; sx < viewCols; sx++ {
+			wx := m.cx - halfW + sx
+			wy := m.cy - halfH + sy
+			p := pos{wx, wy}
+			r := m.getCell(p)
+			atCursor := wx == m.cx && wy == m.cy
+			empty := r == ' ' || r == 0
+			switch {
+			case atCursor && empty:
+				b.WriteString(cur.Render(" "))
+			case atCursor && !empty:
+				b.WriteString(cur.Render(string(r)))
+			case empty:
+				b.WriteString(grass.Render(","))
+			default:
+				b.WriteString(ink.Render(string(r)))
+			}
+		}
+		if sy < viewRows-1 {
+			b.WriteByte('\n')
+		}
+	}
+	return b.String()
 }
 
 func (m *model) View() tea.View {
-	w := m.width
-	h := m.height
-	if w < 10 {
-		w = 80
-	}
-	if h < 6 {
-		h = 24
+	if m.width < 4 || m.height < 4 {
+		v := tea.NewView(lipgloss.NewStyle().Foreground(lipgloss.Color("#71717a")).Render("terminal too small"))
+		v.AltScreen = true
+		return v
 	}
 
-	innerW := w - 4
-	if m.grid == nil {
-		return tea.NewView(lipgloss.NewStyle().Foreground(lipgloss.Color("#71717a")).Render("resize the terminal…"))
-	}
+	viewCols, viewRows := m.viewportSize()
+	grid := m.renderViewport(viewCols, viewRows)
 
-	grid := m.renderGrid()
-	grid = lipgloss.NewStyle().Width(innerW).Render(grid)
+	innerW := max(1, m.width-4)
+	hint := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#71717a")).
+		Width(innerW).
+		Render(m.hintText())
 
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#52525b")).
 		Padding(0, 1).
-		Width(w - 2).
-		Render(grid + "\n" + m.hintBar())
+		Width(m.width).
+		Render(grid + "\n" + hint)
 
-	v := tea.NewView(
-		lipgloss.Place(
-			m.width,
-			m.height,
-			lipgloss.Center,
-			lipgloss.Top,
-			lipgloss.NewStyle().MarginTop(1).Render(box),
-		),
+	screen := lipgloss.Place(
+		m.width,
+		m.height,
+		lipgloss.Center,
+		lipgloss.Center,
+		box,
 	)
+
+	v := tea.NewView(screen)
 	v.AltScreen = true
 	return v
 }
