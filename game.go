@@ -3,6 +3,7 @@ package main
 import (
 	"math/rand"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/charmbracelet/harmonica"
@@ -16,6 +17,7 @@ func (m *model) Init() tea.Cmd {
 	m.springX = harmonica.NewSpring(harmonica.FPS(60), 9.0, 0.92)
 	m.springY = harmonica.NewSpring(harmonica.FPS(60), 9.0, 0.92)
 	m.camX, m.camY = float64(m.cx), float64(m.cy)
+	m.roundStart = time.Now()
 	m.ensureCollectibles()
 	return tick60()
 }
@@ -102,6 +104,51 @@ func (m *model) tryCollect() {
 	m.ensureCollectibles()
 }
 
+// grossWPM uses the standard “word” = 5 characters, elapsed since first stroke.
+// After game over, time is frozen at runEnd so the value does not drift.
+func (m *model) grossWPM() float64 {
+	if m.strokes == 0 || m.typingStart.IsZero() {
+		return 0
+	}
+	end := time.Now()
+	if m.gameOver && !m.runEnd.IsZero() {
+		end = m.runEnd
+	}
+	elapsed := end.Sub(m.typingStart)
+	if elapsed < time.Second {
+		return 0
+	}
+	words := float64(m.strokes) / 5.0
+	mins := elapsed.Minutes()
+	if mins <= 0 {
+		return 0
+	}
+	return words / mins
+}
+
+func (m *model) remainingRound() time.Duration {
+	if m.gameOver {
+		return 0
+	}
+	left := RoundDuration - time.Since(m.roundStart)
+	if left < 0 {
+		return 0
+	}
+	return left
+}
+
+func (m *model) tryTimeout() {
+	if m.gameOver {
+		return
+	}
+	if time.Since(m.roundStart) < RoundDuration {
+		return
+	}
+	m.endReason = endTimeout
+	m.runEnd = time.Now()
+	m.gameOver = true
+}
+
 var directionWords = []struct {
 	word string
 	dx   int
@@ -135,6 +182,11 @@ func (m *model) place(r rune) {
 	if m.gameOver {
 		return
 	}
+	if m.strokes == 0 {
+		m.typingStart = time.Now()
+	}
+	m.strokes++
+
 	p := pos{m.cx, m.cy}
 	delete(m.dots, p)
 	m.setCell(p, r)
@@ -144,6 +196,8 @@ func (m *model) place(r rune) {
 
 	next := pos{m.cx, m.cy}
 	if m.getCell(next) != ' ' {
+		m.endReason = endCollision
+		m.runEnd = time.Now()
 		m.gameOver = true
 		return
 	}
@@ -155,6 +209,7 @@ func (m *model) place(r rune) {
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg.(type) {
 	case frameMsg:
+		m.tryTimeout()
 		m.camX, m.velX = m.springX.Update(m.camX, m.velX, float64(m.cx))
 		m.camY, m.velY = m.springY.Update(m.camY, m.velY, float64(m.cy))
 		return m, tick60()

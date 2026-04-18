@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -40,11 +41,28 @@ func (m *model) viewportSize() (logicalCols, logicalRows int) {
 	return logicalCols, logicalRows
 }
 
+func formatCountdown(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	d = d.Round(time.Second)
+	sec := int(d / time.Second)
+	mm := sec / 60
+	ss := sec % 60
+	return fmt.Sprintf("%02d:%02d", mm, ss)
+}
+
 func (m *model) headerLine() string {
 	if m.gameOver {
 		return ""
 	}
-	return fmt.Sprintf("score %d", m.score)
+	wpm := m.grossWPM()
+	return fmt.Sprintf(
+		"score %d  ·  wpm %.0f  ·  %s left",
+		m.score,
+		math.Round(wpm),
+		formatCountdown(m.remainingRound()),
+	)
 }
 
 func (m *model) renderViewport(logicalCols, logicalRows int) string {
@@ -98,23 +116,69 @@ func (m *model) renderViewport(logicalCols, logicalRows int) string {
 }
 
 func (m *model) gameOverView() string {
-	title := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("#f87171")).
-		Render("GAME OVER")
-	sub := lipgloss.NewStyle().
+	muted := lipgloss.NewStyle().Foreground(lipgloss.Color("#71717a"))
+
+	var headline, accent lipgloss.Style
+	var tagline, banner string
+
+	switch m.endReason {
+	case endTimeout:
+		headline = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#fbbf24"))
+		accent = lipgloss.NewStyle().Foreground(lipgloss.Color("#fde68a")).Bold(true)
+		tagline = "Two minutes are up — run complete."
+		banner = "TIME'S UP"
+	default:
+		headline = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#f87171"))
+		accent = lipgloss.NewStyle().Foreground(lipgloss.Color("#fca5a5")).Bold(true)
+		tagline = "You crossed your own trail."
+		banner = "SELF-COLLISION"
+	}
+
+	titleBlock := lipgloss.JoinVertical(
+		lipgloss.Center,
+		headline.Render("RUN ENDED"),
+		"",
+		accent.Render(banner),
+	)
+
+	stats := lipgloss.JoinVertical(
+		lipgloss.Left,
+		muted.Render("RESULTS"),
+		"",
+		fmt.Sprintf("  Score       %d", m.score),
+		fmt.Sprintf("  WPM         %.0f", math.Round(m.grossWPM())),
+		"",
+		muted.Render("  Round limit  02:00"),
+	)
+	statsStyled := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#e4e4e7")).
-		Render(fmt.Sprintf("final score %d", m.score))
+		Width(min(m.width-8, 42)).
+		Render(stats)
+
 	blurb := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#a1a1aa")).
-		Render("You crossed your own trail.")
-	block := lipgloss.JoinVertical(lipgloss.Center, title, sub, "", blurb)
+		Width(min(m.width-8, 56)).
+		Align(lipgloss.Center).
+		Render(tagline)
+
+	block := lipgloss.JoinVertical(
+		lipgloss.Center,
+		titleBlock,
+		"",
+		"",
+		statsStyled,
+		"",
+		"",
+		blurb,
+	)
+
+	pad := max(6, (m.height-18)/2)
 	return lipgloss.Place(
 		m.width,
 		m.height-3,
 		lipgloss.Center,
 		lipgloss.Center,
-		block,
+		lipgloss.NewStyle().Padding(pad, 2, pad, 2).Render(block),
 	)
 }
 

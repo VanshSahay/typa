@@ -1,6 +1,10 @@
 package main
 
-import "github.com/charmbracelet/harmonica"
+import (
+	"time"
+
+	"github.com/charmbracelet/harmonica"
+)
 
 // frameMsg is dispatched on each animation tick (60 fps).
 type frameMsg struct{}
@@ -33,10 +37,28 @@ type model struct {
 	dots     map[pos]struct{}
 	score    int
 	gameOver bool
+
+	strokes     int
+	typingStart time.Time
+	runEnd      time.Time
+
+	roundStart time.Time
+	endReason  endReason
 }
+
+type endReason uint8
+
+const (
+	endNone endReason = iota
+	endCollision
+	endTimeout
+)
 
 const targetDots = 5
 const dotValue = 10
+
+// RoundDuration is the wall-clock limit for a run (from Init).
+const RoundDuration = 2 * time.Minute
 
 // scaleX is terminal columns per logical map cell (horizontal size).
 const scaleX = 1
