@@ -18,9 +18,24 @@ type step struct {
 	r    rune
 }
 
+type sessionPhase uint8
+
+const (
+	phaseTitle sessionPhase = iota
+	phaseName
+	phasePlay
+	phaseEnd
+)
+
 type model struct {
 	width  int
 	height int
+
+	phase    sessionPhase
+	titleSel int // 0 = start, 1 = exit
+
+	username string
+	nameBuf  string
 
 	cells map[pos]rune
 	cx    int
@@ -42,8 +57,9 @@ type model struct {
 	typingStart time.Time
 	runEnd      time.Time
 
-	roundStart time.Time
-	endReason  endReason
+	roundStart      time.Time
+	endReason       endReason
+	scoreSubmitted  bool // POST once per run to API
 }
 
 type endReason uint8
@@ -57,7 +73,7 @@ const (
 const targetDots = 5
 const dotValue = 10
 
-// RoundDuration is the wall-clock limit for a run (from Init).
+// RoundDuration is the wall-clock limit for a run (from round start in phasePlay).
 const RoundDuration = 2 * time.Minute
 
 // scaleX is terminal columns per logical map cell (horizontal size).

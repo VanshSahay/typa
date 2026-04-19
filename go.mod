@@ -1,4 +1,4 @@
-module github.com/VanshSahay/chainmon
+module github.com/VanshSahay/typa
 
 go 1.25.5
 

@@ -2,9 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   clampName,
   hashIP,
-  loadScores,
-  saveScores,
-  upsert,
+  submitScore,
   type ScoreRow,
 } from "@/lib/scores";
 
@@ -48,9 +46,7 @@ export async function POST(req: NextRequest) {
     updated: new Date().toISOString(),
   };
 
-  const rows = await loadScores();
-  const next = upsert(rows, row);
-  await saveScores(next);
+  await submitScore(row);
 
   return NextResponse.json({ ok: true });
 }

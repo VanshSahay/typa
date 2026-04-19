@@ -22,7 +22,16 @@ func repeatStyle(st lipgloss.Style, r rune, n int) string {
 }
 
 func (m *model) bottomHint() string {
-	return "Press Esc to exit."
+	switch m.phase {
+	case phaseTitle:
+		return "↑/↓  navigate   ·   Enter   ·   Esc quit"
+	case phaseName:
+		return "Enter confirm   ·   Esc back"
+	case phaseEnd:
+		return "m menu   ·   Esc quit"
+	default:
+		return "Esc quit"
+	}
 }
 
 func (m *model) viewportSize() (logicalCols, logicalRows int) {
@@ -53,12 +62,13 @@ func formatCountdown(d time.Duration) string {
 }
 
 func (m *model) headerLine() string {
-	if m.gameOver {
+	if m.phase != phasePlay {
 		return ""
 	}
 	wpm := m.grossWPM()
 	return fmt.Sprintf(
-		"score %d  ·  wpm %.0f  ·  %s left",
+		"%s  ·  score %d  ·  wpm %.0f  ·  %s left",
+		m.username,
 		m.score,
 		math.Round(wpm),
 		formatCountdown(m.remainingRound()),
@@ -115,9 +125,102 @@ func (m *model) renderViewport(logicalCols, logicalRows int) string {
 	return strings.TrimSuffix(b.String(), "\n")
 }
 
-func (m *model) gameOverView() string {
+func (m *model) viewTitle() tea.View {
+	gold := lipgloss.NewStyle().Foreground(lipgloss.Color("#eab308")).Bold(true)
 	muted := lipgloss.NewStyle().Foreground(lipgloss.Color("#71717a"))
+	accent := lipgloss.NewStyle().Foreground(lipgloss.Color("#a3e635"))
 
+	logo := gold.Render(`
+████████╗██╗   ██╗██████╗  █████╗ 
+╚══██╔══╝╚██╗ ██╔╝██╔══██╗██╔══██╗
+   ██║    ╚████╔╝ ██████╔╝███████║
+   ██║     ╚██╔╝  ██╔═══╝ ██╔══██║
+   ██║      ██║   ██║     ██║  ██║
+   ╚═╝      ╚═╝   ╚═╝     ╚═╝  ╚═╝
+                                  `)
+
+	tag := muted.Render("ssh / terminal typing chase · collect ◎ · survive your trail")
+
+	start := "Start run"
+	exit := "Exit"
+	if m.titleSel == 0 {
+		start = lipgloss.NewStyle().Reverse(true).Foreground(lipgloss.Color("#fafafa")).Render("  Start run")
+		exit = lipgloss.NewStyle().Foreground(lipgloss.Color("#d4d4d8")).Render("  Exit")
+	} else {
+		start = lipgloss.NewStyle().Foreground(lipgloss.Color("#d4d4d8")).Render("  Start run")
+		exit = lipgloss.NewStyle().Reverse(true).Foreground(lipgloss.Color("#fafafa")).Render("  Exit")
+	}
+
+	menu := lipgloss.JoinVertical(lipgloss.Left, start, exit)
+	body := lipgloss.JoinVertical(
+		lipgloss.Center,
+		strings.TrimSpace(logo),
+		"",
+		accent.Render("TYPA"),
+		"",
+		tag,
+		"",
+		"",
+		menu,
+	)
+
+	// Shrink-wrap width + horizontal align so the bordered panel centers in the terminal (full Width(m.width) left-aligned text).
+	innerW := max(1, min(m.width-4, 88))
+
+	bodyBlock := lipgloss.NewStyle().
+		Width(innerW).
+		Align(lipgloss.Center).
+		Render(body)
+
+	hint := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#52525b")).
+		Width(innerW).
+		Align(lipgloss.Center).
+		Render(m.bottomHint())
+
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#52525b")).
+		Padding(1, 2).
+		Render(bodyBlock + "\n\n" + hint)
+
+	screen := lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
+	v := tea.NewView(screen)
+	v.AltScreen = true
+	return v
+}
+
+func (m *model) viewName() tea.View {
+	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#e4e4e7")).Render("Pilot name")
+	prompt := lipgloss.JoinHorizontal(
+		lipgloss.Left,
+		lipgloss.NewStyle().Foreground(lipgloss.Color("#86efac")).Render("> "),
+		lipgloss.NewStyle().Foreground(lipgloss.Color("#fafafa")).Render(m.nameBuf),
+		lipgloss.NewStyle().Foreground(lipgloss.Color("#71717a")).Blink(true).Render("▏"),
+	)
+	sub := lipgloss.NewStyle().Foreground(lipgloss.Color("#71717a")).Render("This name appears on the public leaderboard.")
+
+	body := lipgloss.JoinVertical(lipgloss.Left, title, "", prompt, "", sub)
+
+	hint := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#52525b")).
+		Width(m.width - 4).
+		Render(m.bottomHint())
+
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#52525b")).
+		Padding(1, 2).
+		Width(m.width).
+		Render(body + "\n\n" + hint)
+
+	screen := lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
+	v := tea.NewView(screen)
+	v.AltScreen = true
+	return v
+}
+
+func (m *model) gameOverView() string {
 	var headline, accent lipgloss.Style
 	var tagline, banner string
 
@@ -136,23 +239,24 @@ func (m *model) gameOverView() string {
 
 	titleBlock := lipgloss.JoinVertical(
 		lipgloss.Center,
+		lipgloss.NewStyle().Foreground(lipgloss.Color("#a3e635")).Bold(true).Render("TYPA"),
+		"",
 		headline.Render("RUN ENDED"),
 		"",
 		accent.Render(banner),
 	)
 
 	stats := lipgloss.JoinVertical(
-		lipgloss.Left,
-		muted.Render("RESULTS"),
+		lipgloss.Center,
 		"",
-		fmt.Sprintf("  Score       %d", m.score),
-		fmt.Sprintf("  WPM         %.0f", math.Round(m.grossWPM())),
+		fmt.Sprintf("  Pilot    %s", m.username),
+		fmt.Sprintf("  Score    %d", m.score),
+		fmt.Sprintf("  WPM      %.0f", math.Round(m.grossWPM())),
 		"",
-		muted.Render("  Round limit  02:00"),
 	)
 	statsStyled := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#e4e4e7")).
-		Width(min(m.width-8, 42)).
+		Width(min(m.width-8, 46)).
 		Render(stats)
 
 	blurb := lipgloss.NewStyle().
@@ -172,43 +276,17 @@ func (m *model) gameOverView() string {
 		blurb,
 	)
 
-	pad := max(6, (m.height-18)/2)
+	pad := max(4, (m.height-22)/2)
 	return lipgloss.Place(
 		m.width,
-		m.height-3,
+		m.height-4,
 		lipgloss.Center,
 		lipgloss.Center,
-		lipgloss.NewStyle().Padding(pad, 2, pad, 2).Render(block),
+		lipgloss.NewStyle().Padding(pad, 3, pad, 3).Render(block),
 	)
 }
 
-func (m *model) View() tea.View {
-	if m.width < 4 || m.height < 4 {
-		v := tea.NewView(lipgloss.NewStyle().Foreground(lipgloss.Color("#71717a")).Render("terminal too small"))
-		v.AltScreen = true
-		return v
-	}
-
-	if m.gameOver {
-		innerW := max(1, m.width-4)
-		hint := lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#71717a")).
-			Width(innerW).
-			Align(lipgloss.Center).
-			Render(m.bottomHint())
-		main := m.gameOverView()
-		box := lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("#52525b")).
-			Padding(0, 1).
-			Width(m.width).
-			Render(main + "\n\n" + hint)
-		screen := lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
-		v := tea.NewView(screen)
-		v.AltScreen = true
-		return v
-	}
-
+func (m *model) viewPlay() tea.View {
 	logicalCols, logicalRows := m.viewportSize()
 	grid := m.renderViewport(logicalCols, logicalRows)
 
@@ -225,10 +303,7 @@ func (m *model) View() tea.View {
 		Align(lipgloss.Center).
 		Render(m.bottomHint())
 
-	body := grid
-	if strings.TrimSpace(m.headerLine()) != "" {
-		body = head + "\n" + grid
-	}
+	body := head + "\n" + grid
 
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
@@ -248,4 +323,43 @@ func (m *model) View() tea.View {
 	v := tea.NewView(screen)
 	v.AltScreen = true
 	return v
+}
+
+func (m *model) viewGameOver() tea.View {
+	innerW := max(1, m.width-4)
+	hint := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#71717a")).
+		Width(innerW).
+		Align(lipgloss.Center).
+		Render(m.bottomHint())
+	main := m.gameOverView()
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#52525b")).
+		Padding(0, 1).
+		Width(m.width).
+		Render(main + "\n\n" + hint)
+	screen := lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
+	v := tea.NewView(screen)
+	v.AltScreen = true
+	return v
+}
+
+func (m *model) View() tea.View {
+	if m.width < 4 || m.height < 4 {
+		v := tea.NewView(lipgloss.NewStyle().Foreground(lipgloss.Color("#71717a")).Render("terminal too small"))
+		v.AltScreen = true
+		return v
+	}
+
+	switch m.phase {
+	case phaseTitle:
+		return m.viewTitle()
+	case phaseName:
+		return m.viewName()
+	case phaseEnd:
+		return m.viewGameOver()
+	default:
+		return m.viewPlay()
+	}
 }

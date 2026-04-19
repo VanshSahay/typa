@@ -2,6 +2,7 @@ package main
 
 import (
 	"math/rand"
+	"os"
 	"strings"
 	"time"
 	"unicode"
@@ -11,15 +12,49 @@ import (
 )
 
 func (m *model) Init() tea.Cmd {
+	m.phase = phaseTitle
+	m.titleSel = 0
+	return tick60()
+}
+
+func (m *model) resetGame() {
 	m.cells = make(map[pos]rune)
 	m.dots = make(map[pos]struct{})
+	m.cx, m.cy = 0, 0
 	m.dx, m.dy = 1, 0
+	m.stack = nil
 	m.springX = harmonica.NewSpring(harmonica.FPS(60), 9.0, 0.92)
 	m.springY = harmonica.NewSpring(harmonica.FPS(60), 9.0, 0.92)
 	m.camX, m.camY = float64(m.cx), float64(m.cy)
+	m.velX, m.velY = 0, 0
+	m.score = 0
+	m.gameOver = false
+	m.endReason = endNone
+	m.strokes = 0
+	m.typingStart = time.Time{}
+	m.runEnd = time.Time{}
 	m.roundStart = time.Now()
+	m.scoreSubmitted = false
 	m.ensureCollectibles()
-	return tick60()
+}
+
+func (m *model) queueSubmit() {
+	if m.scoreSubmitted || m.username == "" {
+		return
+	}
+	m.scoreSubmitted = true
+	go submitScore(m.username, m.score, m.grossWPM(), os.Getenv("TYPA_CLIENT_IP"))
+}
+
+func (m *model) endRun(reason endReason) {
+	if m.phase != phasePlay {
+		return
+	}
+	m.endReason = reason
+	m.runEnd = time.Now()
+	m.gameOver = true
+	m.phase = phaseEnd
+	m.queueSubmit()
 }
 
 func (m *model) resize(w, h int) {
@@ -104,8 +139,6 @@ func (m *model) tryCollect() {
 	m.ensureCollectibles()
 }
 
-// grossWPM uses the standard “word” = 5 characters, elapsed since first stroke.
-// After game over, time is frozen at runEnd so the value does not drift.
 func (m *model) grossWPM() float64 {
 	if m.strokes == 0 || m.typingStart.IsZero() {
 		return 0
@@ -138,15 +171,13 @@ func (m *model) remainingRound() time.Duration {
 }
 
 func (m *model) tryTimeout() {
-	if m.gameOver {
+	if m.phase != phasePlay || m.gameOver {
 		return
 	}
 	if time.Since(m.roundStart) < RoundDuration {
 		return
 	}
-	m.endReason = endTimeout
-	m.runEnd = time.Now()
-	m.gameOver = true
+	m.endRun(endTimeout)
 }
 
 var directionWords = []struct {
@@ -196,32 +227,30 @@ func (m *model) place(r rune) {
 
 	next := pos{m.cx, m.cy}
 	if m.getCell(next) != ' ' {
-		m.endReason = endCollision
-		m.runEnd = time.Now()
-		m.gameOver = true
+		m.endRun(endCollision)
 		return
 	}
 	m.tryCollect()
 }
 
-// --- tea.Model input loop
-
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg.(type) {
 	case frameMsg:
-		m.tryTimeout()
-		m.camX, m.velX = m.springX.Update(m.camX, m.velX, float64(m.cx))
-		m.camY, m.velY = m.springY.Update(m.camY, m.velY, float64(m.cy))
+		if m.phase == phasePlay && !m.gameOver {
+			m.tryTimeout()
+		}
+		if m.phase == phasePlay {
+			m.camX, m.velX = m.springX.Update(m.camX, m.velX, float64(m.cx))
+			m.camY, m.velY = m.springY.Update(m.camY, m.velY, float64(m.cy))
+		}
 		return m, tick60()
 	}
 
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		if !m.gameOver {
-			m.resize(msg.Width, msg.Height)
+		m.resize(msg.Width, msg.Height)
+		if m.phase == phasePlay && !m.gameOver {
 			m.ensureCollectibles()
-		} else {
-			m.resize(msg.Width, msg.Height)
 		}
 		return m, tick60()
 
@@ -234,6 +263,17 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	k := msg.Key()
+
+	switch m.phase {
+	case phaseTitle:
+		return m.handleTitleKey(k)
+	case phaseName:
+		return m.handleNameKey(k)
+	case phaseEnd:
+		return m.handleEndKey(k)
+	}
+
+	// phasePlay
 	if k.IsRepeat && k.Text != "" {
 		return m, tick60()
 	}
@@ -247,7 +287,6 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		return m, tea.Quit
 	}
-
 	if m.gameOver {
 		return m, tick60()
 	}
@@ -283,4 +322,94 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, tick60()
 	}
+}
+
+func (m *model) handleTitleKey(k tea.Key) (tea.Model, tea.Cmd) {
+	if k.Mod&(tea.ModCtrl|tea.ModAlt|tea.ModMeta|tea.ModSuper) != 0 {
+		if k.String() == "ctrl+c" {
+			return m, tea.Quit
+		}
+		return m, tick60()
+	}
+	switch k.String() {
+	case "esc", "q":
+		return m, tea.Quit
+	case "enter", "space":
+		if m.titleSel == 0 {
+			m.phase = phaseName
+			m.nameBuf = ""
+			return m, tick60()
+		}
+		return m, tea.Quit
+	}
+	switch k.Code {
+	case tea.KeyUp:
+		m.titleSel = (m.titleSel - 1 + 2) % 2
+		return m, tick60()
+	case tea.KeyDown:
+		m.titleSel = (m.titleSel + 1) % 2
+		return m, tick60()
+	}
+	return m, tick60()
+}
+
+func (m *model) handleNameKey(k tea.Key) (tea.Model, tea.Cmd) {
+	if k.Mod&(tea.ModCtrl|tea.ModAlt|tea.ModMeta|tea.ModSuper) != 0 {
+		if k.String() == "ctrl+c" {
+			return m, tea.Quit
+		}
+		return m, tick60()
+	}
+	switch k.String() {
+	case "esc":
+		m.phase = phaseTitle
+		m.nameBuf = ""
+		return m, tick60()
+	case "enter":
+		name := strings.TrimSpace(m.nameBuf)
+		if name == "" {
+			return m, tick60()
+		}
+		if len([]rune(name)) > 24 {
+			name = string([]rune(name)[:24])
+		}
+		m.username = name
+		m.phase = phasePlay
+		m.resetGame()
+		return m, tick60()
+	case "backspace", "ctrl+h":
+		rs := []rune(m.nameBuf)
+		if len(rs) > 0 {
+			m.nameBuf = string(rs[:len(rs)-1])
+		}
+		return m, tick60()
+	}
+	if k.Text != "" {
+		for _, r := range k.Text {
+			if unicode.IsPrint(r) && len([]rune(m.nameBuf)) < 24 {
+				m.nameBuf += string(r)
+			}
+		}
+	}
+	return m, tick60()
+}
+
+func (m *model) handleEndKey(k tea.Key) (tea.Model, tea.Cmd) {
+	if k.Mod&(tea.ModCtrl|tea.ModAlt|tea.ModMeta|tea.ModSuper) != 0 {
+		if k.String() == "ctrl+c" {
+			return m, tea.Quit
+		}
+		return m, tick60()
+	}
+	switch k.String() {
+	case "esc", "q":
+		return m, tea.Quit
+	case "m":
+		m.phase = phaseTitle
+		m.titleSel = 0
+		m.gameOver = false
+		m.nameBuf = ""
+		return m, tick60()
+	}
+	return m, tick60()
 }
