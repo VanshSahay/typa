@@ -5,7 +5,6 @@ type Row = {
   username: string;
   score: number;
   wpm: number;
-  updated: string;
 };
 
 /** Matches terminal title art (TYPA, not TUPA). */
@@ -90,20 +89,19 @@ export default function TypaTerm({ scores }: { scores: Row[] }) {
               <th scope="col" className="num">
                 WPM
               </th>
-              <th scope="col">Updated (UTC)</th>
             </tr>
           </thead>
           <tbody>
             {scores.length === 0 ? (
               <tr>
-                <td className="typa-empty" colSpan={5}>
+                <td className="typa-empty" colSpan={4}>
                   No runs yet — deploy with{" "}
                   <code style={{ color: "#a3e635" }}>TYPA_API_SECRET</code>.
                 </td>
               </tr>
             ) : (
               scores.map((s) => (
-                <tr key={`${s.rank}-${s.username}-${s.updated}`}>
+                <tr key={`${s.rank}-${s.username}`}>
                   <td data-label="Rank">{s.rank}</td>
                   <td className="pilot" data-label="Pilot">
                     {s.username}
@@ -114,7 +112,6 @@ export default function TypaTerm({ scores }: { scores: Row[] }) {
                   <td className="num" data-label="WPM">
                     {s.wpm}
                   </td>
-                  <td data-label="Updated">{formatUtc(s.updated)}</td>
                 </tr>
               ))
             )}
@@ -151,24 +148,5 @@ export default function TypaTerm({ scores }: { scores: Row[] }) {
         typa · terminal typing chase
       </footer>
     </main>
-  );
-}
-
-function formatUtc(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) {
-    return iso.slice(0, 19).replace("T", " ");
-  }
-  return (
-    d.toLocaleString("en-GB", {
-      timeZone: "UTC",
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-      hour12: false,
-    }) + " UTC"
   );
 }

@@ -10,7 +10,6 @@ export default async function Home() {
     username: r.username,
     score: r.score,
     wpm: Math.round(r.wpm),
-    updated: r.updated,
   }));
 
   return <TypaTerm scores={scores} />;
